@@ -1,108 +1,98 @@
-// const assert = require("assert");
-// const ganache = require("ganache-cli");
-// const Web3 = require("web3");
-// const web3 = new Web3(ganache.provider());
-
-// const compiledFactory = require("../ethereum/build/CampaignFactory.json");
-// const compiledCampaign = require("../ethereum/build/Campaign.json");
 const { expect } = require('chai');
-const { ethers } = require('hardhat');
+const {ethers} = require('hardhat');
+const {eth} = require('ethers');
 
-let accounts;
-let factory;
-let campaignAddress;
-let campaign;
+describe('CampaignFactory', () => {
+  let CampaignFactory, Campaign;
+  let campaignFactory, campaign;
+  let owner, contributor, recipient;   
 
-beforeEach(async () => {
-  accounts = await web3.eth.getAccounts();
+  const minimumContribution = ethers.utils.parseEther('0.1');
+  const aboveMinimumContribution = ethers.utils.parseEther('0.2');
 
-//   factory = await new web3.eth.Contract(JSON.parse(compiledFactory.interface))
-//     .deploy({ data: compiledFactory.bytecode })
-//     .send({ from: accounts[0], gas: "1000000" });
 
-  const Factory = await ethers.getContractFactory('CampaignFactory');
-  factory = await Factory.deploy();
+  beforeEach(async () => {
+    [owner, contributor, recipient] = await ethers.getSigners();
+    CampaignFactory = await ethers.getContractFactory('CampaignFactory');
+    Campaign = await ethers.getContractFactory('Campaign');
 
-  await factory.methods.createCampaign("100").send({
-    from: accounts[0],
-    gas: "1000000",
+    campaignFactory = await CampaignFactory.deploy();
+    await campaignFactory.deployed();
+
+    await campaignFactory.createCampaign(minimumContribution);
+
+    const [campaignAddress] = await campaignFactory.getDeployedCampaigns();
+    campaign = await Campaign.attach(campaignAddress);
   });
 
-  [campaignAddress] = await factory.methods.getDeployedCampaigns().call();
-  campaign = await new web3.eth.Contract(
-    JSON.parse(compiledCampaign.interface),
-    campaignAddress
-  );
-});
-
-describe("Campaigns", () => {
-  it("deploys a factory and a campaign", () => {
-    assert.ok(factory.options.address);
-    assert.ok(campaign.options.address);
+  it('should deploy a factory and a campaign successfully', async () => {
+    expect(campaignFactory.address).to.be.properAddress;
+    expect(campaign.address).to.be.properAddress;
   });
 
-  it("marks caller as the campaign manager", async () => {
-    const manager = await campaign.methods.manager().call();
-    assert.equal(accounts[0], manager);
+  it('should mark the caller as the campaign manager', async () => {
+    const manager = await campaign.manager();
+    expect(manager).to.equal(owner.address);
   });
 
-  it("allows people to contribute money and marks them as approvers", async () => {
-    await campaign.methods.contribute().send({
-      value: "200",
-      from: accounts[1],
-    });
-    const isContributor = await campaign.methods.approvers(accounts[1]).call();
-    assert(isContributor);
+  it('should allow people to contribute money and mark them as approvers', async () => {
+    const contribution = aboveMinimumContribution
+    await campaign.connect(contributor).contribute({ value: contribution });
+
+    const isApprover = await campaign.approvers(contributor.address);
+    expect(isApprover).to.be.true;
   });
 
-  it("requires a minimum contribution", async () => {
-    try {
-      await campaign.methods.contribute().send({
-        value: "5",
-        from: accounts[1],
-      });
-      assert(false);
-    } catch (err) {
-      assert(err);
-    }
+  it('should require a minimum contribution', async () => {
+    const contribution = minimumContribution.sub(ethers.utils.parseEther('0.01'));
+    await expect(campaign.connect(contributor).contribute({ value: contribution })).to.be.revertedWith(
+      'The contribution must be greater than the minimum amount.'
+    );
+
+    const isApprover = await campaign.approvers(contributor.address);
+    expect(isApprover).to.be.false;
   });
 
-  it("allows a manager to make a payment request", async () => {
-    await campaign.methods
-      .createRequest("Buy batteries", "100", accounts[1])
-      .send({
-        from: accounts[0],
-        gas: "1000000",
-      });
-    const request = await campaign.methods.requests(0).call();
+  it('should allow a manager to make a payment request', async () => {
+    const description = 'Buy some materials';
+    const value = ethers.utils.parseEther('0.05');
 
-    assert.equal("Buy batteries", request.description);
+    await campaign.createRequest(description, value, recipient.address);
+
+    const request = await campaign.requests(0);
+    expect(request.description).to.equal(description);
+    expect(request.value).to.equal(value);
+    expect(request.recipient).to.equal(recipient.address);
+    expect(request.complete).to.be.false;
+    expect(request.approvalCount).to.equal(0);
   });
 
-  it("processes requests", async () => {
-    await campaign.methods.contribute().send({
-      from: accounts[0],
-      value: web3.utils.toWei("10", "ether"),
-    });
+  it('should process requests', async () => {
+    // Contribute enough to approve requests
+    const contribution = aboveMinimumContribution;
+    await campaign.connect(contributor).contribute({ value: contribution });
 
-    await campaign.methods
-      .createRequest("A", web3.utils.toWei("5", "ether"), accounts[1])
-      .send({ from: accounts[0], gas: "1000000" });
+    // Create a request
+    const description = 'Buy some materials';
+    const value = ethers.utils.parseEther('0.05');
+    await campaign.createRequest(description, value, recipient.address);
 
-    await campaign.methods.approveRequest(0).send({
-      from: accounts[0],
-      gas: "1000000",
-    });
+    // Approve the request
+    await campaign.connect(contributor).approveRequest(0);
 
-    await campaign.methods.finalizeRequest(0).send({
-      from: accounts[0],
-      gas: "1000000",
-    });
+    // Check the approval count
+    const request = await campaign.requests(0);
+    expect(request.approvalCount).to.equal(1);
 
-    let balance = await web3.eth.getBalance(accounts[1]);
-    balance = web3.utils.fromWei(balance, "ether");
-    balance = parseFloat(balance);
-    console.log(balance);
-    assert(balance > 104);
+    // Get the initial balance of the recipient
+    const initialBalance = await ethers.provider.getBalance(recipient.address);
+    console.log(initialBalance)
+    // Finalize the request
+    await campaign.finalizeRequest(0);
+
+    // Check that the request has been processed
+    const balance = await ethers.provider.getBalance(recipient.address);
+    const endBalance = initialBalance.add(value);
+    expect(balance).to.equal(endBalance);
   });
 });
