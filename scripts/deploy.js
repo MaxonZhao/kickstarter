@@ -4,15 +4,62 @@
 // You can also run a script with `npx hardhat run <script>`. If you do that, Hardhat
 // will compile your contracts, add the Hardhat Runtime Environment's members to the
 // global scope, and execute the script.
-const hre = require("hardhat");
+const {ethers} = require("hardhat");
+const path = require("path");
+const fs = require("fs");
 
 async function main() {
-  const CampaignFactory = await hre.ethers.getContractFactory("CampaignFactory");
+
+  // This is just a convenience check
+  if (network.name === "hardhat") {
+    console.warn(
+        "You are trying to deploy a contract to the Hardhat Network, which" +
+        "gets automatically created and destroyed every time. Use the Hardhat" +
+        " option '--network localhost'"
+    );
+  }
+
+  // ethers is available in the global scope
+  const [deployer] = await ethers.getSigners();
+  console.log(
+      "Deploying the contracts with the account:",
+      await deployer.getAddress()
+  );
+
+  console.log("Account balance:", (await deployer.getBalance()).toString());
+
+  const CampaignFactory = await ethers.getContractFactory("CampaignFactory");
+
   const campaignFactory = await CampaignFactory.deploy();
+  await campaignFactory.deployed();
 
 
   console.log(
-    ` CampaignFactory with ${campaignFactory.address} deployed to ${campaignFactory.address}`
+      ` CampaignFactory is deployed to ${campaignFactory.address}`
+  );
+
+
+  saveFrontendFiles(campaignFactory);
+}
+
+
+function saveFrontendFiles(campaignFactory) {
+  const contractsDir = path.join(__dirname, "..", "frontend", "contracts");
+
+  if (!fs.existsSync(contractsDir)) {
+    fs.mkdirSync(contractsDir);
+  }
+
+  fs.writeFileSync(
+      path.join(contractsDir, "contract-address.json"),
+      JSON.stringify({ CampaignFactory: campaignFactory.address }, undefined, 2)
+  );
+
+  const CampaignArtifact = artifacts.readArtifactSync("CampaignFactory");
+
+  fs.writeFileSync(
+      path.join(contractsDir, "CampaignFactory.json"),
+      JSON.stringify(CampaignArtifact, null, 2)
   );
 }
 
